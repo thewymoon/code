@@ -9,7 +9,7 @@ from numpy.lib.stride_tricks import as_strided
 ### FUNCTION DEFINITIONS ####
 
 # Loss Function
-def entropy(p_vec, pseudo=0.01):
+def entropy(p_vec, pseudo=0.00001):
     if np.sum(p_vec) > 0:
         return np.sum([-(p)*np.log((p)) for p in [(x/np.sum(p_vec))+pseudo for x in p_vec]])
     else:
@@ -30,13 +30,23 @@ def two_class_weighted_gini(counts):
 
 # CLASSIFY SEQUENCES
 def classify_sequences(X, beta, motif_length, sequence_length):
+
     X_matrices = [x_to_matrix(x, motif_length, sequence_length) for x in np.array(X)]
     a = np.array([np.dot(x, beta) for x in X_matrices])
     sig_sum = [np.sum(single_sigmoid_vectorized(x, 100, 0.9)) for x in a]
+
+    return threshold(single_sigmoid_vectorized(sig_sum, 100, 0.9))
+
+def newclassify_sequences(X_matrices, beta, motif_length, sequence_length):
+
+    #X_matrices = [x_to_matrix(x, motif_length, sequence_length) for x in np.array(X)]
+    a = np.array([np.dot(x, beta) for x in X_matrices])
+    sig_sum = [np.sum(single_sigmoid_vectorized(x, 100, 0.9)) for x in a]
+
     return threshold(single_sigmoid_vectorized(sig_sum, 100, 0.9))
 
 def classify_sequence(x, beta, motif_length, sequence_length):
-    
+
     x_matrix = x_to_matrix(x, motif_length, sequence_length)
     a = np.dot(x_matrix, beta)
     sig_sum = np.sum(single_sigmoid_vectorized(a, 100, 0.9))
@@ -75,6 +85,16 @@ def return_counts(labels, classifications):
     true0 = zipped.count((0,0))
     false0 = zipped.count((1,0))
     return [true1, false1, true0, false0]
+
+def return_weightedcounts(labels, classifications, weights):
+    zipped = list(zip(list(zip(labels, classifications)), weights))
+    true1 = np.sum([a[1] for a in zipped if a[0]==(1,1)])
+    false1 = np.sum([a[1] for a in zipped if a[0]==(0,1)]) 
+    true0 = np.sum([a[1] for a in zipped if a[0]==(0,0)])
+    false0 = np.sum([a[1] for a in zipped if a[0]==(1,0)])
+    return [true1, false1, true0, false0]
+
+
 
 
 # function that creates random initial beta
@@ -120,16 +140,6 @@ def simplified_sigmoid_deriv(x, alpha):
 def x_to_string(x):
     return "".join([str(i) for i in x])
 
-#def x_to_matrix(x, motif_length, sequence_length):
-#    return np.array([list(x[(4*i):(4*(i+motif_length))]) for i in range(sequence_length-motif_length)])
-
-#@jit
-#def x_to_matrix(x, motif_length, sequence_length):
-#    output = np.array([])
-#    for i in range(sequence_length - motif_length):
-#        output = np.append(output, x[(4*i):(4*(i+motif_length))])
-#
-#    return output
 
 def x_to_matrix(x, motif_length, sequence_length):
     numpy_arrayx = np.array(x)
@@ -139,6 +149,7 @@ def x_to_matrix(x, motif_length, sequence_length):
     return as_strided(numpy_arrayx, shape = [sequence_length - motif_length, motif_length*4], strides = [size*4,size])
 
 
+### returns the sum of all the sigmoids of all subsequences
 def sum_sigmoid_sequence(xdotbeta, motif_length, sequence_length):
     
     #x_matrix = x_to_matrix(x, motif_length, sequence_length)
@@ -214,11 +225,9 @@ def gradient(X, y, beta, motif_length, sequence_length):
     output = np.dot(np.array(p_factor), np.array(total))
     return output/(np.sum(np.abs(output))*8) , (first - second)
 
-def newnewgradient(X, y, beta, motif_length, sequence_length, step_size=1/50):
-    #print(len(X))
-    #print(len(y))
-
-    X_matrices = [x_to_matrix(x, motif_length, sequence_length) for x in np.array(X)]
+def newnewgradient(X_matrices, y, beta, motif_length, sequence_length, step_size=1/50):
+    
+    #X_matrices = [x_to_matrix(x, motif_length, sequence_length) for x in np.array(X)]
     a = np.array([np.dot(x, beta) for x in X_matrices])
     sig_sum = [np.sum(single_sigmoid_vectorized(x, 100, 0.9)) for x in a]
     b = [single_sigmoid_deriv_vectorized(x, 100, 0.9) for x in a]
@@ -235,9 +244,34 @@ def newnewgradient(X, y, beta, motif_length, sequence_length, step_size=1/50):
 
     gradient = np.sum((c * np.array(d)[:, np.newaxis]) * p_factor[:, np.newaxis], axis=0)
 
-    #return (gradient/np.sum(np.abs(gradient) * 15)), [p, n, N-n, P-p]
     return (gradient/(np.sqrt(np.dot(gradient,gradient)) * (1/step_size))), [p, n, N-n, P-p]
 
+def weightedgradient(X_matrices, y, weights, beta, motif_length, sequence_length, step_size=1/50):
+    weights_series = pd.Series(weights)
+
+    #X_matrices = [x_to_matrix(x, motif_length, sequence_length) for x in np.array(X)]
+    a = np.array([np.dot(x, beta) for x in X_matrices])
+    sig_sum = [np.sum(single_sigmoid_vectorized(x, 100, 0.9)) for x in a]
+    b = [single_sigmoid_deriv_vectorized(x, 100, 0.9) for x in a]
+    c = [np.sum(X_matrices[i] * b[i][:,np.newaxis], axis=0) for i in range(len(X_matrices))]
+    d = [single_sigmoid_deriv(x) for x in sig_sum] * weights
+    #print(len(d))
+
+    p = (pd.Series(sig_sum)[(y==1)].apply(single_sigmoid, args=(100,0.9)) * weights[y==1]).sum()
+    n = (pd.Series(sig_sum)[(y==0)].apply(single_sigmoid, args=(100,0.9)) * weights[y==0]).sum()
+
+    #print(p, n)
+
+    P = weights_series[y==1].sum()
+    N = weights_series[y==0].sum()
+    
+    #p_factor = (y==0).apply(lambda x: int(x))*(np.log(n/(N-n))-np.log((p+n)/(P+N-p-n)))+(y==1).apply(lambda x: int(x))*(np.log(p/(P-p))-np.log((p+n)/(P+N-p-n)))
+    p_factor = (y==0)*(np.log(n/(N-n))-np.log((p+n)/(P+N-p-n)))+(y==1)*(np.log(p/(P-p))-np.log((p+n)/(P+N-p-n)))
+
+    gradient = np.sum((c * np.array(d)[:, np.newaxis]) * p_factor[:, np.newaxis], axis=0)
+
+    #return (gradient/np.sum(np.abs(gradient) * 15)), [p, n, N-n, P-p]
+    return (gradient/(np.sqrt(np.dot(gradient,gradient)) * (1/step_size))), [p, n, N-n, P-p]
 
 
 def Information_Gain(X, y, beta, motif_length, sequence_length):
@@ -252,6 +286,10 @@ def Information_Gain(X, y, beta, motif_length, sequence_length):
     second = two_class_weighted_entropy([p, n, P-p, N-n])
     
     return first - second
+
+
+def acceptance_probability(initial, final, T):
+    return np.exp((initial - final)/T)
 
 
 
@@ -278,83 +316,22 @@ class Node:
     def set_terminal_status(self, status):
         self.terminal = status
 
-    def randomfit(self, X, y, iterations):
-        data_size = len(X)
-
-        print("starting beta...", self.beta)
-        
-        labels = y
-        classification = pd.DataFrame(X).apply(lambda x: classify_sequence(x, self.beta, self.seq_length, self.motif_length, self.thresh), axis=1)
-        #current_entropy = two_class_weighted_entropy(return_counts(labels, classification))
-        current_entropy = self.loss_func(return_counts(labels, classification))
-
-        for i in range(iterations):
-            print(i)
-            print("current entropy...:", current_entropy)
-            print("current counts...:", return_counts(labels, classification))
-
-            self.loss_memory.append(current_entropy)
-            
-            #try new beta
-            print('trying new beta')
-            new_beta = small_change(self.beta, std=np.random.random())
-            new_classification = pd.DataFrame(X).apply(lambda x: classify_sequence(x, new_beta, self.seq_length, self.motif_length, self.thresh), axis=1)
-            print('counts of new beta....:', return_counts(labels, new_classification))
-            
-            if self.loss_func(return_counts(labels, new_classification)) < current_entropy:
-                print("\nTHIS BETA WAS BETTER!!\n")
-                self.beta = new_beta
-                classification = new_classification
-                current_entropy = self.loss_func(return_counts(labels, new_classification))
-            else:
-                print("\nback to old beta \n")
-                
-        
-        ## ONCE FIT, final classification of resulting nodes are defined ##
-        final_counts = return_counts(labels, classification)
-        if final_counts[0] > final_counts[1]:
-            self.left_classification = 1
-        else:
-            self.left_classification = 0
-
-        if final_counts[2] > final_counts[3]:
-            self.right_classification = 0
-        else:   
-            self.right_classification = 1
-
-
-
-        #return self.beta
-
     
-    def fit(self, X, y, iterations, step_size):
-        data_size = len(X)
-
-        #print("starting beta...", self.beta)
-        
+    def fit(self, X_matrices, y, weights, iterations, step_size):
+        data_size = len(X_matrices)
         labels = y
-        #classification = pd.DataFrame(X).apply(lambda x: classify_sequence(x, self.beta, self.seq_length, self.motif_length, self.thresh), axis=1)
-        #print("counts...", return_counts(labels, classification))
-        #current_entropy = self.loss_func(return_counts(labels, classification))
-
-        #print("initial information gain", Information_Gain(X, y, self.beta, self.motif_length, self.seq_length))
 
         
-        #print("current entropy...", current_entropy)
-        
+        #X_matrices = [x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)]
 
         for i in range(iterations):
-            #print(i)
-            #print('trying new beta')
-            grad = newnewgradient(X, y, self.beta, self.motif_length, self.seq_length, step_size)
-            #print(grad[0])
+            grad = weightedgradient(X_matrices,  y, weights, self.beta, self.motif_length, self.seq_length, step_size)
+
             self.beta += grad[0]
             self.loss_memory.append(self.loss_func(grad[1]))
-            #print(grad[1])
 
                 
-        #classification = pd.DataFrame(X).apply(lambda x: classify_sequence(x, self.beta, self.seq_length, self.motif_length, self.thresh), axis=1)
-        classification = classify_sequences(X, self.beta, self.motif_length, self.seq_length)
+        classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
         print("counts...", return_counts(labels, classification))
         current_entropy = self.loss_func(return_counts(labels, classification))
         print("current entropy...", current_entropy)
@@ -374,19 +351,81 @@ class Node:
 
 
 
+    def anneal(self, X_matrices, y, weights, alpha=0.9, T_start = .001, T_min = 0.0005, iterT=100):
+        #X_matrices = [x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)]
+        cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
+        T = T_start
+
+        while T > T_min:
+            i = 1
+            print('New Temperature', T, "\n")
+            while i <= iterT:
+                ## VERY IMPORTANT STEP!!! POTENTIAL GAINS HERE in better proposals##
+                new_beta = small_change(self.beta, std=np.random.chisquare(.4))
+                #new_beta = random_change(self.beta, std=0.05)
+
+                new_cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_beta, self.motif_length, self.seq_length), weights))
+                ap = acceptance_probability(cost, new_cost, T)
+                #print(ap)
+                if ap > np.random.random():
+                    self.beta = new_beta
+                    cost = new_cost
+                    self.loss_memory.append(cost)
+                i += 1
+            T *= alpha
+
+### everything here and below copied from fit
+        classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
+        print("counts...", return_counts(y, classification))
+        current_entropy = self.loss_func(return_counts(y, classification))
+        print("current entropy...", current_entropy)
+        
+        
+        ## ONCE FIT, final classification of resulting nodes are defined ##
+        final_counts = return_counts(y, classification)
+        if final_counts[0] > final_counts[1]:
+            self.left_classification = 1
+        else:
+            self.left_classification = 0
+
+        if final_counts[2] > final_counts[3]:
+            self.right_classification = 0
+        else:
+            self.right_classification = 1
+
+
+
+
+        
+        
+
+
         #return self.beta
+        
 
-    def split_points(self, X, y):
+
+    def split_points(self, X_matrices, y, weights):
        
-        classification = classify_sequences(X, self.beta, self.motif_length, self.seq_length)
+        classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
 
-        left_split = pd.DataFrame(X).ix[classification == 1]
-        left_split_labels = y.ix[classification == 1]
+        left_split = np.array(X_matrices)[classification==1]
+        left_split_labels = np.array(y)[classification == 1]
+        left_split_weights = weights[classification==1]
 
-        right_split = pd.DataFrame(X).ix[classification == 0]
-        right_split_labels = y.ix[classification == 0]
+        right_split = np.array(X_matrices)[classification==0]
+        right_split_labels = np.array(y)[classification == 0]
+        right_split_weights = weights[classification==0]
 
-        return (left_split, left_split_labels), (right_split, right_split_labels)
+        return (left_split, left_split_labels, left_split_weights), (right_split, right_split_labels, right_split_weights)
+
+    def newsplit_points(self, indices, X_matrices):
+       
+        classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
+
+        left_split = indices[np.where(classification==1)[0]]
+        right_split = indices[np.where(classification==0)[0]]
+
+        return (left_split, right_split)
 
     def predict_one(self, x):
         if classify_sequence(x, self.beta, self.motif_length, self.seq_length) > 0.5:
@@ -396,7 +435,6 @@ class Node:
 
     def predict(self, X):
 
-        #return pd.DataFrame(X).apply(lambda x: self.predict_one(x), axis=1)
         return classify_sequences(X, self.beta, self.motif_length, self.seq_length)
 
 
@@ -411,24 +449,20 @@ class ObliqueConvDecisionTree:
         self.seq_length = seq_length
         self.nodes = []
 
-    def fit(self, X, y, iterations, step_size):
+    def gradientfit(self, X, y, weights, iterations, step_size):
         data = []
-        artificial_initial_beta = [0,1,0,0,
-                                   1,0,0,0,
-                                   0,1,0,0,
-                                   0,0,1,0,
-                                   0,0,0,1,
-                                   0,0,1,0]
-        artificial_initial_beta = [x/5 for x in artificial_initial_beta]
+
+        X_matrices = np.array([x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)])
 
         for layer in range(self.depth):
             #First layer go!
             if layer == 0:
-                #node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=artificial_initial_beta)
                 node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
-                node0.fit(X, y, iterations, step_size)
+                node0.fit(X_matrices, y, weights, iterations, step_size)
+                #node0.anneal(X_matrices, y, weights, alpha=0.9, T_start=.0005, T_min=0.0001, iterT=200)
+
                 self.nodes.append([node0])
-                data.append([node0.split_points(X, y)])
+                data.append([node0.newsplit_points(np.arange(len(X_matrices)), X_matrices)])
 
             #Rest of the layers
             else:
@@ -439,26 +473,30 @@ class ObliqueConvDecisionTree:
                     ### do this stuff only if the node was not terminal ###
                     if self.nodes[layer-1][i].terminal == False:
                     
-                        left_X, left_y = data[layer-1][i][0]
-                        right_X, right_y = data[layer-1][i][1]
+                        left = data[layer-1][i][0]
+                        right = data[layer-1][i][1]
 
                         temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
-                        #temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=artificial_initial_beta)
-                        temp_node_L.fit(left_X, left_y, iterations, step_size)
+                        temp_node_L.fit(X_matrices.take(left, axis=0), y.take(left), weights.take(left), iterations, step_size)
+                        #temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
                         
                         temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
-                        #temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=artificial_initial_beta)
-                        temp_node_R.fit(right_X, right_y, iterations, step_size)
+                        temp_node_R.fit(X_matrices.take(right, axis=0), y.take(right), weights.take(right), iterations, step_size)
+                        #temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
+
+                        left_children = temp_node_L.newsplit_points(left, X_matrices.take(left, axis=0))
+                        right_children = temp_node_R.newsplit_points(right, X_matrices.take(right, axis=0))
+
 
                         ######################################################################
                         #### Call it a terminal node if the child nodes don't have enough ####
                         ######################################################################
-                        if (np.min([len(temp_node_L.split_points(left_X, left_y)[0][0]), len(temp_node_L.split_points(left_X, left_y)[1][0])]) < .05*len(X)):
+                        if (np.min([len(left_children[0]), len(left_children[1])]) < .05*len(X_matrices)):
                             temp_node_L.set_terminal_status(status=True)
                         else:
                             pass
 
-                        if (np.min([len(temp_node_R.split_points(right_X, right_y)[0][0]), len(temp_node_R.split_points(right_X, right_y)[1][0])]) < .05*len(X)):
+                        if (np.min([len(right_children[0]), len(right_children[1])]) < .05*len(X_matrices)):
                             temp_node_R.set_terminal_status(status=True)
                         else:
                             pass
@@ -468,20 +506,99 @@ class ObliqueConvDecisionTree:
                         ######################################
                         if i==0:
                             self.nodes.append([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
-                            data.append([temp_node_L.split_points(left_X, left_y), temp_node_R.split_points(right_X, right_y)])
+                            data.append([left_children, right_children])
                         else:
                             self.nodes[layer].extend([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
-                            data[layer].extend([temp_node_L.split_points(left_X, left_y), temp_node_R.split_points(right_X, right_y)])
+                            data[layer].extend([left_children, right_children])
 
 
                     else: #make dummy nodes and set status to terminal also
-                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=artificial_initial_beta)
-                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=artificial_initial_beta)
+                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
 
                         temp_node_L.set_terminal_status(status=True)
                         temp_node_R.set_terminal_status(status=True)
 
 
+
+                        if i==0:
+                            self.nodes.append([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data.append([data[layer-1][i], data[layer-1][i]])
+                        else:
+                            self.nodes[layer].extend([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data[layer].extend([data[layer-1][i], data[layer-1][i]])
+
+        for node in  self.nodes[-1]:
+            node.set_terminal_status(status=True)
+
+
+
+    def annealfit(self, X, y, weights, alpha=0.9, T_start=.0005, T_min=.0001, iterations=250):
+        data = []
+
+        X_matrices = np.array([x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)])
+
+        for layer in range(self.depth):
+            #First layer go!
+            if layer == 0:
+                node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                node0.anneal(X_matrices, y, weights, alpha=alpha, T_start=T_start, T_min=T_min, iterT=iterations)
+
+                self.nodes.append([node0])
+                data.append([node0.newsplit_points(np.arange(len(X_matrices)), X_matrices)])
+
+            #Rest of the layers
+            else:
+
+                #loop through the nodes from previous layer
+                for i in range(len(self.nodes[layer-1])):
+
+                    ### do this stuff only if the node was not terminal ###
+                    if self.nodes[layer-1][i].terminal == False:
+                    
+                        left = data[layer-1][i][0]
+                        right = data[layer-1][i][1]
+
+                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                        temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha, T_start, T_min, iterations)
+                        
+                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                        temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha, T_start, T_min, iterations)
+
+                        left_children = temp_node_L.newsplit_points(left, X_matrices.take(left, axis=0))
+                        right_children = temp_node_R.newsplit_points(right, X_matrices.take(right, axis=0))
+
+
+                        ######################################################################
+                        #### Call it a terminal node if the child nodes don't have enough ####
+                        ######################################################################
+                        if (np.min([len(left_children[0]), len(left_children[1])]) < .05*len(X_matrices)):
+                            temp_node_L.set_terminal_status(status=True)
+                        else:
+                            pass
+
+                        if (np.min([len(right_children[0]), len(right_children[1])]) < .05*len(X_matrices)):
+                            temp_node_R.set_terminal_status(status=True)
+                        else:
+                            pass
+                        
+                        ######################################
+                        ### Add the nodes and data to list ###
+                        ######################################
+                        if i==0:
+                            self.nodes.append([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data.append([left_children, right_children])
+                        else:
+                            self.nodes[layer].extend([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data[layer].extend([left_children, right_children])
+
+
+                    else: #make dummy nodes and set status to terminal also
+                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+
+                        temp_node_L.set_terminal_status(status=True)
+                        temp_node_R.set_terminal_status(status=True)
 
                         if i==0:
                             self.nodes.append([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
@@ -504,31 +621,121 @@ class ObliqueConvDecisionTree:
         terminal_node = False
         #loop uniil at terminal node
         while terminal_node == False:
-            #print(current_layer)
-            #print(leftright)    
 
             out = classify_sequence(x, current_node.beta, current_node.motif_length, current_node.seq_length)
             if out == 1:
                 current_layer += 1
                 leftright = leftright*2
                 current_node = self.nodes[current_layer][leftright]
-                #print('went left')
                 
             else:
                 current_layer += 1
                 leftright = leftright*2 + 1
                 current_node = self.nodes[current_layer][leftright]
-                #print('went right')
 
             terminal_node = current_node.terminal
 
-        #print(current_layer, leftright)
-
         return current_node.predict_one(x)
 
+    def predict(self, X):
+        return np.array([self.predict_one(x) for x in X])
 
 
 
+class BoostedConvDT:
+
+    def __init__(self, num_trees, tree_depth):
+        self.num_trees = num_trees
+        self.tree_depth = tree_depth
+
+
+################################################################################################################3
+
+
+def print_with_features(L, Features, ordered=False):
+    if ordered==False:
+        for i in range(len(features)):
+            print(L[i], Features[i])
+    else:
+        print_with_features([L[x] for x in np.argsort(L)[::-1]],
+                           [Features[x] for x in np.argsort(L)[::-1]])
+        
+def update_importances(importances, tree, weights, alpha):
+    if len(importances) != len(weights):
+        raise ValueError
+    else:
+        for i in range(len(importances)):
+            importances[i] += tree.feature_importances_ * weights[i] * alpha
+            
+def normalize(x):
+    return x/np.sum(x)
+
+def predict_proba_importances(X, BDTLIST):
+    output = []
+    for b in BDTLIST:
+        output.append(b.predict(X.reshape(1,-1))[0])
+    
+    return output
+
+
+
+
+def plot_roc(true_y, proba_y):
+    plt.figure(figsize=(8,5))
+    false_pos, true_pos, _ = roc_curve(true_y, proba_y)
+    roc_auc = auc(false_pos, true_pos)
+    
+    plt.plot(false_pos, true_pos)
+    plt.text(.6,.1,"AUC: " + str("%.4f" % roc_auc), fontsize=20)
+    plt.xlabel("false positive rate")
+    plt.ylabel("true positive rate")
+
+
+
+
+class AdaboostedDecisionTree(object):
+    
+    def __init__(self):
+        self.weights_list = []
+        self.importances_list = []
+        self.alphas_list = []
+        self.trees_list = []
+        self.num_trees = 25
+        self.weights = []
+        self.all_importances = []
+        self.depth=3
+        self.motif_length=6
+        self.seq_length=199
+    
+                
+    def _update_importances(self, tree, alpha):
+        if len(self.all_importances) != len(self.weights):
+            raise ValueError
+        else:
+            for i in range(len(self.all_importances)):
+                self.all_importances[i] += tree.feature_importances_ * self.weights[i] * alpha
+                
+    
+    def fit(self, X, y):
+        
+        self.weights = np.ones(len(X))/len(X)
+        
+        for i in range(self.num_trees):
+            print("TREE NUMBER", i)
+            self.weights_list.append(self.weights)
+
+            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length)
+            t.gradientfit(X, y, weights=self.weights, iterations=1000, step_size=1/150)
+            
+            wrong_list = [int(x) for x in t.predict(np.array(X)) != y]
+            err = np.sum(self.weights * wrong_list)/np.sum(self.weights)
+            alpha = np.log((1-err)/err)
+            self.alphas_list.append(alpha)
+
+            self.weights *= np.exp([alpha*x for x in wrong_list]) / np.sum(np.exp([alpha*x for x in wrong_list]))
+            self.weights = normalize(self.weights)
+
+            self.trees_list.append(t)
 
 
 
