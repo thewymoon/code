@@ -693,19 +693,19 @@ def plot_roc(true_y, proba_y):
 
 
 
-class AdaboostedDecisionTree(object):
+class AdaboostedDecisionTree():
     
-    def __init__(self):
+    def __init__(self, num_trees=25, max_depth=2, motif_length=6, sequence_length=199):
         self.weights_list = []
         self.importances_list = []
         self.alphas_list = []
         self.trees_list = []
-        self.num_trees = 25
+        self.num_trees = num_trees
         self.weights = []
         self.all_importances = []
-        self.depth=3
-        self.motif_length=6
-        self.seq_length=199
+        self.depth=max_depth
+        self.motif_length=motif_length
+        self.seq_length=sequence_length
     
                 
     def _update_importances(self, tree, alpha):
@@ -716,7 +716,7 @@ class AdaboostedDecisionTree(object):
                 self.all_importances[i] += tree.feature_importances_ * self.weights[i] * alpha
                 
     
-    def fit(self, X, y):
+    def gradientfit(self, X, y, iterations=1000, step_size=1/200):
         
         self.weights = np.ones(len(X))/len(X)
         
@@ -725,7 +725,7 @@ class AdaboostedDecisionTree(object):
             self.weights_list.append(self.weights)
 
             t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length)
-            t.gradientfit(X, y, weights=self.weights, iterations=1000, step_size=1/150)
+            t.gradientfit(X, y, self.weights, iterations, step_size)
             
             wrong_list = [int(x) for x in t.predict(np.array(X)) != y]
             err = np.sum(self.weights * wrong_list)/np.sum(self.weights)
@@ -736,6 +736,35 @@ class AdaboostedDecisionTree(object):
             self.weights = normalize(self.weights)
 
             self.trees_list.append(t)
+
+    def annealfit(self, X, y, alpha=0.9, T_start=.0005, T_min=.0001, iterations=250):
+        
+        self.weights = np.ones(len(X))/len(X)
+        
+        for i in range(self.num_trees):
+            print("TREE NUMBER", i)
+            self.weights_list.append(self.weights)
+
+            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length)
+            t.annealfit(X, y, self.weights, alpha, T_start, T_min, iterations)
+            
+            wrong_list = [int(x) for x in t.predict(np.array(X)) != y]
+            err = np.sum(self.weights * wrong_list)/np.sum(self.weights)
+            alpha = np.log((1-err)/err)
+            self.alphas_list.append(alpha)
+
+            self.weights *= np.exp([alpha*x for x in wrong_list]) / np.sum(np.exp([alpha*x for x in wrong_list]))
+            self.weights = normalize(self.weights)
+
+            self.trees_list.append(t)
+
+
+
+    def predict(self, X):
+        
+        tree_predictions = np.array([tree.predict(X) for tree in self.trees_list])
+
+        return threshold(np.dot(self.alphas_list, tree_predictions)/np.sum(self.alphas_list))
 
 
 
