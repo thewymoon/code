@@ -64,8 +64,9 @@ def threshold(value):
         return 0
 
 
-
-#Beta Updates
+###################
+##Beta proposals ##
+###################
 def random_change(Beta, std=0.5):
     return [b+np.random.normal(scale=std) for b in Beta]
 
@@ -75,6 +76,12 @@ def small_change(Beta, std=0.2):
     new_Beta = copy.deepcopy(Beta)
     new_Beta[random_base*4:random_base*4+4] = [b + np.random.normal(scale=std) for b in new_Beta[random_base*4:random_base*4+4]]
     return new_Beta
+
+def acceptable_beta(Beta, thresh):
+    stride = Beta[0].itemsize
+    Beta_ndarray = as_strided(Beta, shape=(6,4), strides=[stride*4,stride])
+    return all(np.sum(np.abs(Beta_ndarray), axis=1) < thresh)
+
 
 
 # returns how many true pos, false, pos, true neg, false neg
@@ -293,6 +300,33 @@ def acceptance_probability(initial, final, T):
 
 
 
+
+#### N GRAM COUNTIN #####
+def getSequenceNgrams(sequence):
+    return [''.join(x) for x in nltk.ngrams(sequence, 6)]
+
+def getCounts(sequences):
+    count_dict = {}
+    ngrams = sequences.apply(getSequenceNgrams)
+    for i in mitf_sequences.index.values:
+        for gram in ngrams.ix[i]:
+            if gram not in count_dict.keys():
+                count_dict[gram] = 1
+            else:
+                count_dict[gram] += 1
+    return count_dict
+
+def motif_to_beta(motif):
+    A = [1.0,0.0,0.0,0.0]
+    C = [0.0,1.0,0.0,0.0]
+    G = [0.0,0.0,1.0,0.0]
+    T = [0.0,0.0,0.0,1.0]
+    convertdict = {'A':A, 'C':C, 'G':G, 'T':T}
+    
+    return np.array([convertdict[x] for x in motif]).flatten()
+
+
+
 #########################
 ### CLASS DEFINITIONS ###
 #########################
@@ -353,6 +387,7 @@ class Node:
 
     def anneal(self, X_matrices, y, weights, alpha=0.9, T_start = .001, T_min = 0.0005, iterT=100):
         #X_matrices = [x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)]
+        #cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
         cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
         T = T_start
 
@@ -361,9 +396,13 @@ class Node:
             print('New Temperature', T, "\n")
             while i <= iterT:
                 ## VERY IMPORTANT STEP!!! POTENTIAL GAINS HERE in better proposals##
-                new_beta = small_change(self.beta, std=np.random.chisquare(.4))
-                #new_beta = random_change(self.beta, std=0.05)
 
+                while True:
+                    new_beta = small_change(self.beta, std=np.random.chisquare(.4))
+                    if acceptable_beta(new_beta,thresh=1):
+                        break
+
+                #new_cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_beta, self.motif_length, self.seq_length), weights))
                 new_cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_beta, self.motif_length, self.seq_length), weights))
                 ap = acceptance_probability(cost, new_cost, T)
                 #print(ap)
@@ -443,10 +482,12 @@ class Node:
 
 class ObliqueConvDecisionTree:
     
-    def __init__(self, depth, motif_length, seq_length):
+    def __init__(self, depth, motif_length, seq_length, initial_betas, initial_beta_probabilities):
         self.depth = depth
         self.motif_length = motif_length
         self.seq_length = seq_length
+        self.initial_betas = initial_betas
+        self.initial_beta_probabilities = initial_beta_probabilities
         self.nodes = []
 
     def gradientfit(self, X, y, weights, iterations, step_size):
@@ -457,7 +498,9 @@ class ObliqueConvDecisionTree:
         for layer in range(self.depth):
             #First layer go!
             if layer == 0:
-                node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                #node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                        beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
                 node0.fit(X_matrices, y, weights, iterations, step_size)
                 #node0.anneal(X_matrices, y, weights, alpha=0.9, T_start=.0005, T_min=0.0001, iterT=200)
 
@@ -476,11 +519,13 @@ class ObliqueConvDecisionTree:
                         left = data[layer-1][i][0]
                         right = data[layer-1][i][1]
 
-                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
                         temp_node_L.fit(X_matrices.take(left, axis=0), y.take(left), weights.take(left), iterations, step_size)
                         #temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
                         
-                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
                         temp_node_R.fit(X_matrices.take(right, axis=0), y.take(right), weights.take(right), iterations, step_size)
                         #temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
 
@@ -541,7 +586,8 @@ class ObliqueConvDecisionTree:
         for layer in range(self.depth):
             #First layer go!
             if layer == 0:
-                node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                        beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
                 node0.anneal(X_matrices, y, weights, alpha=alpha, T_start=T_start, T_min=T_min, iterT=iterations)
 
                 self.nodes.append([node0])
@@ -559,11 +605,13 @@ class ObliqueConvDecisionTree:
                         left = data[layer-1][i][0]
                         right = data[layer-1][i][1]
 
-                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
-                        temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha, T_start, T_min, iterations)
+                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=alpha, T_start=T_start, T_min=T_min, iterT=iterations)
                         
-                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
-                        temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha, T_start, T_min, iterations)
+                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=alpha, T_start=T_start, T_min=T_min, iterT=iterations)
 
                         left_children = temp_node_L.newsplit_points(left, X_matrices.take(left, axis=0))
                         right_children = temp_node_R.newsplit_points(right, X_matrices.take(right, axis=0))
@@ -695,10 +743,10 @@ def plot_roc(true_y, proba_y):
 
 class AdaboostedDecisionTree():
     
-    def __init__(self, num_trees=25, max_depth=2, motif_length=6, sequence_length=199):
+    def __init__(self, initial_betas, initial_beta_probabilities, num_trees=25, max_depth=2, motif_length=6, sequence_length=199):
         self.weights_list = []
         self.importances_list = []
-        self.alphas_list = []
+        self.gammas_list = []
         self.trees_list = []
         self.num_trees = num_trees
         self.weights = []
@@ -706,14 +754,9 @@ class AdaboostedDecisionTree():
         self.depth=max_depth
         self.motif_length=motif_length
         self.seq_length=sequence_length
+        self.initial_betas = initial_betas
+        self.initial_beta_probabilities = initial_beta_probabilities
     
-                
-    def _update_importances(self, tree, alpha):
-        if len(self.all_importances) != len(self.weights):
-            raise ValueError
-        else:
-            for i in range(len(self.all_importances)):
-                self.all_importances[i] += tree.feature_importances_ * self.weights[i] * alpha
                 
     
     def gradientfit(self, X, y, iterations=1000, step_size=1/200):
@@ -724,15 +767,16 @@ class AdaboostedDecisionTree():
             print("TREE NUMBER", i)
             self.weights_list.append(self.weights)
 
-            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length)
+            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length,
+                    initial_betas=self.initial_betas, initial_beta_probabilities=self.initial_beta_probabilities)
             t.gradientfit(X, y, self.weights, iterations, step_size)
             
             wrong_list = [int(x) for x in t.predict(np.array(X)) != y]
             err = np.sum(self.weights * wrong_list)/np.sum(self.weights)
-            alpha = np.log((1-err)/err)
-            self.alphas_list.append(alpha)
+            gamma = np.log((1-err)/err)
+            self.gammas_list.append(gamma)
 
-            self.weights *= np.exp([alpha*x for x in wrong_list]) / np.sum(np.exp([alpha*x for x in wrong_list]))
+            self.weights *= np.exp([gamma*x for x in wrong_list]) / np.sum(np.exp([gamma*x for x in wrong_list]))
             self.weights = normalize(self.weights)
 
             self.trees_list.append(t)
@@ -745,15 +789,16 @@ class AdaboostedDecisionTree():
             print("TREE NUMBER", i)
             self.weights_list.append(self.weights)
 
-            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length)
+            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length,
+                    initial_betas=self.initial_betas, initial_beta_probabilities=self.initial_beta_probabilities)
             t.annealfit(X, y, self.weights, alpha, T_start, T_min, iterations)
             
             wrong_list = [int(x) for x in t.predict(np.array(X)) != y]
             err = np.sum(self.weights * wrong_list)/np.sum(self.weights)
-            alpha = np.log((1-err)/err)
-            self.alphas_list.append(alpha)
+            gamma = np.log((1-err)/err)
+            self.gammas_list.append(gamma)
 
-            self.weights *= np.exp([alpha*x for x in wrong_list]) / np.sum(np.exp([alpha*x for x in wrong_list]))
+            self.weights *= np.exp([gamma*x for x in wrong_list]) / np.sum(np.exp([gamma*x for x in wrong_list]))
             self.weights = normalize(self.weights)
 
             self.trees_list.append(t)
@@ -764,22 +809,8 @@ class AdaboostedDecisionTree():
         
         tree_predictions = np.array([tree.predict(X) for tree in self.trees_list])
 
-        return threshold(np.dot(self.alphas_list, tree_predictions)/np.sum(self.alphas_list))
+        return threshold(np.dot(self.gammas_list, tree_predictions)/np.sum(self.gammas_list))
 
 
 
-
-
-
-
-
-
-
-
-                
-
-
-
-
-    
 
