@@ -848,7 +848,7 @@ class BaggedConvDT():
             print("TREE NUMBER", i)
 
             train_size = int(len(X)*percent_bag)
-            rows = np.random.choice(range(X.shape[0]), size=train_size, replace=False)
+            rows = np.random.choice(range(X.shape[0]), size=train_size, replace=True)
             X_temp = X[rows]
             y_temp = y[rows]
 
