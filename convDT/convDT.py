@@ -4,7 +4,7 @@ import copy
 from numba import jit, vectorize
 import itertools
 from numpy.lib.stride_tricks import as_strided
-import nltk
+#import nltk
 
 
 ### FUNCTION DEFINITIONS ####
@@ -55,8 +55,6 @@ def classify_sequence(x, beta, motif_length, sequence_length):
     return threshold(single_sigmoid_vectorized(sig_sum, 100, 0.9))
 
 
-
-
 @vectorize('float64(float64)')
 def threshold(value):
     if value > 0.5:
@@ -65,9 +63,9 @@ def threshold(value):
         return 0
 
 
-###################
-##Beta proposals ##
-###################
+####################
+## Beta functions ##
+####################
 def random_change(Beta, std=0.5):
     return [b+np.random.normal(scale=std) for b in Beta]
 
@@ -89,7 +87,34 @@ def acceptable_beta(Beta, thresh):
     Beta_ndarray = as_strided(Beta, shape=(6,4), strides=[stride*4,stride])
     return all(np.sum(np.abs(Beta_ndarray), axis=1) < thresh)
 
+def get_new_beta(Beta, update_func, thresh, *args):
+    while True:
+        new_Beta = update_func(Beta, *args)
+        #print(Beta)
+        #print("TRYING!")
+        if acceptable_beta(new_Beta, thresh):
+            break
+    return new_Beta
 
+def get_new_betas(Beta_vec, update_func, thresh, *args):
+    return [get_new_beta(b, update_func, thresh, *args) for b in Beta_vec]
+    
+# function that creates random initial beta
+def random_beta(motif_length):
+    output = []
+    for i in range(motif_length):
+        temp = np.zeros(4)
+        num = np.random.choice(range(4))
+        temp[num] = np.random.normal(loc=1/(motif_length-1), scale=0.01)
+        output.extend(temp)
+
+    return output
+
+
+
+###########################
+#### COUNT FUNCTIONS ######
+###########################
 
 # returns how many true pos, false, pos, true neg, false neg
 def return_counts(labels, classifications):
@@ -109,18 +134,6 @@ def return_weightedcounts(labels, classifications, weights):
     return [true1, false1, true0, false0]
 
 
-
-
-# function that creates random initial beta
-def random_beta(motif_length):
-    output = []
-    for i in range(motif_length):
-        temp = np.zeros(4)
-        num = np.random.choice(range(4))
-        temp[num] = np.random.normal(loc=1/(motif_length-1), scale=0.01)
-        output.extend(temp)
-
-    return output
 
 #######################################
 ##### GRADIENT DESCENT FUNCTIONS ######
@@ -193,9 +206,9 @@ def sum_sigmoid_deriv_sequence(x, beta, motif_length, sequence_length):
 
 
 
-    def gradient(X, y, beta, motif_length, sequence_length):
+def gradient(X, y, beta, motif_length, sequence_length):
 
-        X_positive = X[y==1]
+    X_positive = X[y==1]
     X_negative = X[y==0]
 
 
@@ -309,19 +322,19 @@ def acceptance_probability(initial, final, T):
 
 
 #### N GRAM COUNTIN #####
-def getSequenceNgrams(sequence):
-    return [''.join(x) for x in nltk.ngrams(sequence, 6)]
-
-def getCounts(sequences):
-    count_dict = {}
-    ngrams = sequences.apply(getSequenceNgrams)
-    for i in sequences.index.values:
-        for gram in ngrams.ix[i]:
-            if gram not in count_dict.keys():
-                count_dict[gram] = 1
-            else:
-                count_dict[gram] += 1
-    return count_dict
+#def getSequenceNgrams(sequence):
+#    return [''.join(x) for x in nltk.ngrams(sequence, 6)]
+#
+#def getCounts(sequences):
+#    count_dict = {}
+#    ngrams = sequences.apply(getSequenceNgrams)
+#    for i in sequences.index.values:
+#        for gram in ngrams.ix[i]:
+#            if gram not in count_dict.keys():
+#                count_dict[gram] = 1
+#            else:
+#                count_dict[gram] += 1
+#    return count_dict
 
 def motif_to_beta(motif):
     A = [1.0,0.0,0.0,0.0]
@@ -411,6 +424,7 @@ class Node:
             while i <= iterT:
                 ## VERY IMPORTANT STEP!!! POTENTIAL GAINS HERE in better proposals##
 
+                ### Try new beta ###
                 while True:
                     new_beta = small_change(self.beta, std=np.random.chisquare(.5))
                     #new_beta = random_change(self.beta, std=np.random.chisquare(.4))
@@ -421,6 +435,32 @@ class Node:
                 new_cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_beta, self.motif_length, self.seq_length), weights))
                 ap = acceptance_probability(cost, new_cost, T)
                 #print(ap)
+                if ap > np.random.random():
+                    self.beta = new_beta
+                    cost = new_cost
+                    self.loss_memory.append(cost)
+                i += 1
+            T *= alpha
+
+    def paranneal(self, X_matrices, y, weights, alpha=0.9, T_start = .001, T_min = 0.0005, iterT=100):
+        #X_matrices = [x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)]
+        #cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
+        cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
+        T = T_start
+
+
+        while T > T_min:
+            i = 1
+            print('New Temperature', T, "\n")
+            while i <= iterT:
+                ## VERY IMPORTANT STEP!!! POTENTIAL GAINS HERE in better proposals##
+
+                ### Try new beta ###
+                new_beta = get_new_beta(self.beta, small_change, 1, np.random.chisquare(.3))
+
+                new_cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_beta, self.motif_length, self.seq_length), weights))
+                ap = acceptance_probability(cost, new_cost, T)
+
                 if ap > np.random.random():
                     self.beta = new_beta
                     cost = new_cost
@@ -448,14 +488,7 @@ class Node:
             self.right_classification = 1
 
 
-
-
-
-
-
-
         #return self.beta
-
 
 
     def split_points(self, X_matrices, y, weights):
@@ -491,6 +524,182 @@ class Node:
 
         return classify_sequences(X, self.beta, self.motif_length, self.seq_length)
 
+class ParaNode:
+
+    def __init__(self, motif_length, seq_length, beta_vec0):
+        self.motif_length = motif_length
+        self.seq_length = seq_length
+        self.thresh = 1
+        self.beta = beta_vec0[0]
+        self.beta_vec = beta_vec0
+        self.loss_func = two_class_weighted_entropy
+        self.terminal = False
+        self.left_classification = None
+        self.right_classification = None
+        self.loss_memory = []
+
+    def set_loss_function(loss):
+        self.loss_func = loss
+
+    def set_terminal_status(self, status):
+        self.terminal = status
+
+
+    #def fit(self, X_matrices, y, weights, iterations, step_size):
+    #    data_size = len(X_matrices)
+    #    labels = y
+
+
+    #    #X_matrices = [x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)]
+
+    #    for i in range(iterations):
+    #        grad = weightedgradient(X_matrices,  y, weights, self.beta, self.motif_length, self.seq_length, step_size)
+
+    #        self.beta += grad[0]
+    #        self.loss_memory.append(self.loss_func(grad[1]))
+
+
+    #    classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
+    #    print("counts...", return_counts(labels, classification))
+    #    current_entropy = self.loss_func(return_counts(labels, classification))
+    #    print("current entropy...", current_entropy)
+
+
+    #    ## ONCE FIT, final classification of resulting nodes are defined ##
+    #    final_counts = return_counts(labels, classification)
+    #    if final_counts[0] > final_counts[1]:
+    #        self.left_classification = 1
+    #    else:
+    #        self.left_classification = 0
+
+    #    if final_counts[2] > final_counts[3]:
+    #        self.right_classification = 0
+    #    else:
+    #        self.right_classification = 1
+
+
+
+    #def anneal(self, X_matrices, y, weights, alpha=0.9, T_start = .001, T_min = 0.0005, iterT=100):
+    #    #X_matrices = [x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)]
+    #    #cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
+    #    cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
+    #    T = T_start
+
+    #    while T > T_min:
+    #        i = 1
+    #        print('New Temperature', T, "\n")
+    #        while i <= iterT:
+    #            ## VERY IMPORTANT STEP!!! POTENTIAL GAINS HERE in better proposals##
+
+    #            ### Try new beta ###
+    #            while True:
+    #                new_beta = small_change(self.beta, std=np.random.chisquare(.5))
+    #                #new_beta = random_change(self.beta, std=np.random.chisquare(.4))
+    #                if acceptable_beta(new_beta,thresh=1):
+    #                    break
+
+    #            #new_cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_beta, self.motif_length, self.seq_length), weights))
+    #            new_cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_beta, self.motif_length, self.seq_length), weights))
+    #            ap = acceptance_probability(cost, new_cost, T)
+    #            #print(ap)
+    #            if ap > np.random.random():
+    #                self.beta = new_beta
+    #                cost = new_cost
+    #                self.loss_memory.append(cost)
+    #            i += 1
+    #        T *= alpha
+
+    def anneal(self, X_matrices, y, weights, alpha=0.9, T_start = .001, T_min = 0.0005, iterT=100):
+        #X_matrices = [x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)]
+        #cost = self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length), weights))
+        cost_vector = [self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, b, self.motif_length, self.seq_length), weights)) for b in self.beta_vec]
+        T = T_start
+
+
+        while T > T_min:
+            i = 1
+            print('New Temperature', T, "\n")
+            while i <= iterT:
+                ## VERY IMPORTANT STEP!!! POTENTIAL GAINS HERE in better proposals##
+
+                ### Try new beta ###
+                new_beta_vector = get_new_betas(self.beta_vec, small_change, 1, np.random.chisquare(.1))
+                new_cost_vector = [self.loss_func(return_weightedcounts(y, newclassify_sequences(X_matrices, new_b, self.motif_length, self.seq_length), weights)) for new_b in new_beta_vector]
+
+                #print('made it to step 1')
+
+                ap_vector = np.array([acceptance_probability(cost_vector[j], new_cost_vector[j] ,T) for j in range(len(cost_vector))])
+                random_vector = np.array([np.random.random() for j in range(len(cost_vector))])
+
+                #print('made it to step 2')
+
+                for j in np.where(ap_vector > random_vector)[0]:
+                    self.beta_vec[j] = new_beta_vector[j]
+                    cost_vector[j] = new_cost_vector[j]
+                    #print('made it to step 3')
+                i+=1
+                #print(i)
+            T *= alpha
+
+### everything here and below copied from fit
+        classification_vec = [newclassify_sequences(X_matrices, b, self.motif_length, self.seq_length) for b in self.beta_vec]
+        #print("counts...", return_counts(y, classification))
+        current_entropy_vec = [self.loss_func(return_counts(y, c)) for c in classification_vec]
+        #print("current entropy...", current_entropy)
+
+        best = np.argmin(current_entropy_vec)
+        print(current_entropy_vec[best])
+        self.beta = self.beta_vec[best]
+
+
+        ## ONCE FIT, final classification of resulting nodes are defined ##
+        final_counts = return_counts(y, classification_vec[best])
+        if final_counts[0] > final_counts[1]:
+            self.left_classification = 1
+        else:
+            self.left_classification = 0
+
+        if final_counts[2] > final_counts[3]:
+            self.right_classification = 0
+        else:
+            self.right_classification = 1
+
+
+        #return self.beta
+
+
+    def split_points(self, X_matrices, y, weights):
+
+        classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
+
+        left_split = np.array(X_matrices)[classification==1]
+        left_split_labels = np.array(y)[classification == 1]
+        left_split_weights = weights[classification==1]
+
+        right_split = np.array(X_matrices)[classification==0]
+        right_split_labels = np.array(y)[classification == 0]
+        right_split_weights = weights[classification==0]
+
+        return (left_split, left_split_labels, left_split_weights), (right_split, right_split_labels, right_split_weights)
+
+    def newsplit_points(self, indices, X_matrices):
+
+        classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
+
+        left_split = indices[np.where(classification==1)[0]]
+        right_split = indices[np.where(classification==0)[0]]
+
+        return (left_split, right_split)
+
+    def predict_one(self, x):
+        if classify_sequence(x, self.beta, self.motif_length, self.seq_length) > 0.5:
+            return self.left_classification
+        else:
+            return self.right_classification
+
+    def predict(self, X):
+
+        return classify_sequences(X, self.beta, self.motif_length, self.seq_length)
 
 
 
@@ -601,8 +810,11 @@ class ObliqueConvDecisionTree:
         for layer in range(self.depth):
             #First layer go!
             if layer == 0:
-                node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
-                        beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                #node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                #        beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                node0 = ParaNode(motif_length=self.motif_length, seq_length=self.seq_length, 
+                        beta_vec0=[motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1) for i in range(3)])
+
                 node0.anneal(X_matrices, y, weights, alpha=alpha, T_start=T_start, T_min=T_min, iterT=iterations)
 
                 self.nodes.append([node0])
@@ -620,12 +832,16 @@ class ObliqueConvDecisionTree:
                         left = data[layer-1][i][0]
                         right = data[layer-1][i][1]
 
-                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
-                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        #temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                        #        beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        temp_node_L = ParaNode(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta_vec0=[motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1) for i in range(3)])
                         temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=alpha, T_start=T_start, T_min=T_min, iterT=iterations)
 
-                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
-                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        #temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                        #        beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        temp_node_R = ParaNode(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta_vec0=[motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1) for i in range(3)])
                         temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=alpha, T_start=T_start, T_min=T_min, iterT=iterations)
 
                         left_children = temp_node_L.newsplit_points(left, X_matrices.take(left, axis=0))
