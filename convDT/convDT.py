@@ -4,6 +4,7 @@ import copy
 from numba import jit, vectorize
 import itertools
 from numpy.lib.stride_tricks import as_strided
+from scipy.stats import multivariate_normal
 #import nltk
 
 
@@ -41,10 +42,15 @@ def classify_sequences(X, beta, motif_length, sequence_length):
 def newclassify_sequences(X_matrices, beta, motif_length, sequence_length):
 
     #X_matrices = [x_to_matrix(x, motif_length, sequence_length) for x in np.array(X)]
-    a = np.array([np.dot(x, beta) for x in X_matrices])
-    sig_sum = [np.sum(single_sigmoid_vectorized(x, 100, 0.9)) for x in a]
+    #a = np.array([np.dot(x, beta) for x in X_matrices])
+    #a = np.dot(X_matrices, beta)
+    #sig_sum = [np.sum(single_sigmoid_vectorized(x, 100, 0.9)) for x in a]
+    #sig_sum = np.sum(single_sigmoid_vectorized(a, 100, 0.9), axis=1)
 
-    return threshold(single_sigmoid_vectorized(sig_sum, 100, 0.9))
+    #return threshold(single_sigmoid_vectorized(sig_sum, 100, 0.9))
+    #return threshold(single_sigmoid_vectorized(np.sum(single_sigmoid_vectorized(np.array([np.dot(x,beta) for x in X_matrices]),100,0.9), axis=1),100,0.9))
+    #return threshold(single_sigmoid_vectorized(np.sum(single_sigmoid_vectorized(np.array([np.dot(x,beta) for x in X_matrices]),100,0.9), axis=1),100,0.9))
+    return threshold(single_sigmoid_vectorized(np.sum(single_sigmoid_vectorized(X_matrices @ beta,100,0.9), axis=1),100,0.9))
 
 def classify_sequence(x, beta, motif_length, sequence_length):
 
@@ -123,6 +129,7 @@ def return_counts(labels, classifications):
     false1 = zipped.count((0,1))
     true0 = zipped.count((0,0))
     false0 = zipped.count((1,0))
+
     return [true1, false1, true0, false0]
 
 def return_weightedcounts(labels, classifications, weights):
@@ -370,6 +377,7 @@ class Node:
         self.left_classification = None
         self.right_classification = None
         self.loss_memory = []
+        self.beta_memory = []
 
     def set_loss_function(loss):
         self.loss_func = loss
@@ -489,6 +497,74 @@ class Node:
 
 
         #return self.beta
+
+    def crossentropyFit(self, X_matrices, y, weights, alpha, lam, cov_init, iterations):
+        nucleotides = ['A', 'C', 'G', 'T']
+        keywords = itertools.product(nucleotides, repeat = 6)
+        kmer_list = ["".join(x) for x in keywords]
+
+        cov = cov_init 
+        size = 1000
+
+        for i in range(iterations):
+            if i==0:
+                full_grid = np.array([motif_to_beta(x) for x in kmer_list]) / 5
+                members = full_grid[np.random.choice(range(len(full_grid)), size=1500, replace=False)]
+            else:
+                members = multivariate_normal.rvs(mean=mu, cov=cov, size=size)
+
+            member_scores = [self.loss_func(return_counts(y, newclassify_sequences(X_matrices, member, self.motif_length, self.seq_length))) for member in members] \
+                            + (lam * np.sum(members**2, axis=1))
+
+            ##Get the top samples##
+            best_scoring_indices = np.argsort(member_scores)[0:10]
+            print(member_scores[best_scoring_indices])
+
+            ## Calculate the MLE ##
+            new_mu = np.mean(members[best_scoring_indices], axis=0)
+            new_cov = np.mean([np.outer(x,x) for x in (members[best_scoring_indices] - new_mu)], axis=0)
+
+
+            if i==0:
+                mu = new_mu
+                cov = new_cov
+
+            else:
+                mu = alpha*new_mu + (1-alpha)*mu
+                cov = alpha*new_cov + (1-alpha)*cov
+
+            entropy = self.loss_func(return_counts(y, newclassify_sequences(X_matrices, mu, self.motif_length, self.seq_length)))
+
+            ##keeping track##
+            self.beta_memory.append(mu)
+            self.loss_memory.append(entropy)
+            self.beta = mu
+
+### everything here and below copied from fit
+        classification = newclassify_sequences(X_matrices, self.beta, self.motif_length, self.seq_length)
+        print("counts...", return_counts(y, classification))
+        current_entropy = self.loss_func(return_counts(y, classification))
+        print("current entropy...", current_entropy)
+
+
+        ## ONCE FIT, final classification of resulting nodes are defined ##
+        final_counts = return_counts(y, classification)
+        if final_counts[0] > final_counts[1]:
+            self.left_classification = 1
+        else:
+            self.left_classification = 0
+
+        if final_counts[2] > final_counts[3]:
+            self.right_classification = 0
+        else:
+            self.right_classification = 1
+
+            
+
+
+
+
+        
 
 
     def split_points(self, X_matrices, y, weights):
@@ -889,6 +965,92 @@ class ObliqueConvDecisionTree:
         for node in  self.nodes[-1]:
             node.set_terminal_status(status=True)
 
+    def crossentropyfit(self, X, y, weights, iterations):
+        data = []
+
+        X_matrices = np.array([x_to_matrix(x, self.motif_length, self.seq_length) for x in np.array(X)])
+
+        for layer in range(self.depth):
+            #First layer go!
+            if layer == 0:
+                #node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                        beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                node0.crossentropyFit(X_matrices, y, weights, alpha=0.8, lam=0, cov_init=0.5, iterations=iterations)
+
+                self.nodes.append([node0])
+                data.append([node0.newsplit_points(np.arange(len(X_matrices)), X_matrices)])
+
+            #Rest of the layers
+        else:
+
+            #loop through the nodes from previous layer
+                for i in range(len(self.nodes[layer-1])):
+
+                    ### do this stuff only if the node was not terminal ###
+                    if self.nodes[layer-1][i].terminal == False:
+
+                        left = data[layer-1][i][0]
+                        right = data[layer-1][i][1]
+
+                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        temp_node_L.crossentropyFit(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=0.8, lam=0, cov_init=0.5, iterations=iterations)
+                        #temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
+
+                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
+                                beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
+                        temp_node_R.crossentropyFit(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=0.8, lam=0, cov_init=0.5, iterations=iterations)
+                        #temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
+
+                        left_children = temp_node_L.newsplit_points(left, X_matrices.take(left, axis=0))
+                        right_children = temp_node_R.newsplit_points(right, X_matrices.take(right, axis=0))
+
+
+                        ######################################################################
+                        #### Call it a terminal node if the child nodes don't have enough ####
+                        ######################################################################
+                        if (np.min([len(left_children[0]), len(left_children[1])]) < .05*len(X_matrices)):
+                            temp_node_L.set_terminal_status(status=True)
+                        else:
+                            pass
+
+                        if (np.min([len(right_children[0]), len(right_children[1])]) < .05*len(X_matrices)):
+                            temp_node_R.set_terminal_status(status=True)
+                        else:
+                            pass
+
+                        ######################################
+                        ### Add the nodes and data to list ###
+                        ######################################
+                        if i==0:
+                            self.nodes.append([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data.append([left_children, right_children])
+                        else:
+                            self.nodes[layer].extend([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data[layer].extend([left_children, right_children])
+
+
+                    else: #make dummy nodes and set status to terminal also
+                        temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+                        temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
+
+                        temp_node_L.set_terminal_status(status=True)
+                        temp_node_R.set_terminal_status(status=True)
+
+
+
+                        if i==0:
+                            self.nodes.append([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data.append([data[layer-1][i], data[layer-1][i]])
+                        else:
+                            self.nodes[layer].extend([copy.deepcopy(temp_node_L), copy.deepcopy(temp_node_R)])
+                            data[layer].extend([data[layer-1][i], data[layer-1][i]])
+
+        for node in  self.nodes[-1]:
+            node.set_terminal_status(status=True)
+
+
 
     def predict_one(self, x):
 
@@ -921,11 +1083,6 @@ class ObliqueConvDecisionTree:
 
 
 
-class BoostedConvDT:
-
-    def __init__(self, num_trees, tree_depth):
-        self.num_trees = num_trees
-        self.tree_depth = tree_depth
 
 
 ################################################################################################################3
@@ -1073,7 +1230,25 @@ class BaggedConvDT():
             t.annealfit(X_temp, y_temp, self.weights, alpha, T_start, T_min, iterations)
 
             self.trees_list.append(t)
+            
+    def crossentropyfit(self, X, y, iterations=10, percent_bag=0.66):
 
+        self.weights = np.ones(len(X))/len(X)
+
+        for i in range(self.num_trees):
+            print("TREE NUMBER", i)
+
+            train_size = int(len(X)*percent_bag)
+            rows = np.random.choice(range(X.shape[0]), size=train_size, replace=True)
+            X_temp = X[rows]
+            y_temp = y[rows]
+
+            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.sequence_length,
+                    initial_betas=self.initial_betas, initial_beta_probabilities=self.initial_beta_probabilities)
+            t.crossentropyfit(X_temp, y_temp, self.weights, iterations)
+
+            self.trees_list.append(t)
+            
     def predict(self, X):
         tree_predictions = np.mean(np.array([tree.predict(X) for tree in self.trees_list]), axis=0)
         return threshold(tree_predictions)
