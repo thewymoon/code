@@ -50,7 +50,7 @@ def newclassify_sequences(X_matrices, beta, motif_length, sequence_length):
     #return threshold(single_sigmoid_vectorized(sig_sum, 100, 0.9))
     #return threshold(single_sigmoid_vectorized(np.sum(single_sigmoid_vectorized(np.array([np.dot(x,beta) for x in X_matrices]),100,0.9), axis=1),100,0.9))
     #return threshold(single_sigmoid_vectorized(np.sum(single_sigmoid_vectorized(np.array([np.dot(x,beta) for x in X_matrices]),100,0.9), axis=1),100,0.9))
-    return threshold(single_sigmoid_vectorized(np.sum(single_sigmoid_vectorized(X_matrices @ beta,100,0.9), axis=1),100,0.9))
+    return threshold(single_sigmoid_vectorized(np.sum(single_sigmoid_vectorized(np.dot(X_matrices, beta),100,0.9), axis=1),100,0.9))
 
 def classify_sequence(x, beta, motif_length, sequence_length):
 
@@ -527,7 +527,7 @@ class Node:
 
             if i==0:
                 mu = new_mu
-                cov = new_cov
+                cov = alpha*new_cov + (1-alpha)*cov
 
             else:
                 mu = alpha*new_mu + (1-alpha)*mu
