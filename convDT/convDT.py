@@ -509,7 +509,7 @@ class Node:
         for i in range(iterations):
             if i==0:
                 full_grid = np.array([motif_to_beta(x) for x in kmer_list]) / 5
-                members = full_grid[np.random.choice(range(len(full_grid)), size=1500, replace=False)]
+                members = full_grid[np.random.choice(range(len(full_grid)), size=2000, replace=False)]
             else:
                 members = multivariate_normal.rvs(mean=mu, cov=cov, size=size)
 
@@ -560,10 +560,6 @@ class Node:
             self.right_classification = 1
 
             
-
-
-
-
         
 
 
@@ -976,7 +972,7 @@ class ObliqueConvDecisionTree:
                 #node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, beta0=random_beta(self.motif_length))
                 node0 = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
                         beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
-                node0.crossentropyFit(X_matrices, y, weights, alpha=0.8, lam=0, cov_init=0.5, iterations=iterations)
+                node0.crossentropyFit(X_matrices, y, weights, alpha=0.9, lam=0, cov_init=0.5, iterations=iterations)
 
                 self.nodes.append([node0])
                 data.append([node0.newsplit_points(np.arange(len(X_matrices)), X_matrices)])
@@ -995,12 +991,12 @@ class ObliqueConvDecisionTree:
 
                         temp_node_L = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
                                 beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
-                        temp_node_L.crossentropyFit(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=0.8, lam=0, cov_init=0.5, iterations=iterations)
+                        temp_node_L.crossentropyFit(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=0.9, lam=0, cov_init=0.5, iterations=iterations)
                         #temp_node_L.anneal(X_matrices.take(left, axis=0), y.take(left), weights.take(left), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
 
                         temp_node_R = Node(motif_length=self.motif_length, seq_length=self.seq_length, 
                                 beta0=motif_to_beta(np.random.choice(self.initial_betas, p=self.initial_beta_probabilities))/(self.motif_length-1))
-                        temp_node_R.crossentropyFit(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=0.8, lam=0, cov_init=0.5, iterations=iterations)
+                        temp_node_R.crossentropyFit(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=0.9, lam=0, cov_init=0.5, iterations=iterations)
                         #temp_node_R.anneal(X_matrices.take(right, axis=0), y.take(right), weights.take(right), alpha=.9, T_start=.0005, T_min=.0001, iterT=200)
 
                         left_children = temp_node_L.newsplit_points(left, X_matrices.take(left, axis=0))
@@ -1191,6 +1187,28 @@ class AdaboostedDecisionTree():
 
             self.trees_list.append(t)
 
+    def crossentroypfit(self, X, y, iterations=10):
+
+        self.weights = np.ones(len(X))/len(X)
+
+        for i in range(self.num_trees):
+            print("TREE NUMBER", i)
+            self.weights_list.append(self.weights)
+
+            t = ObliqueConvDecisionTree(depth=self.depth, motif_length=self.motif_length, seq_length=self.seq_length,
+                    initial_betas=self.initial_betas, initial_beta_probabilities=self.initial_beta_probabilities)
+            t.crossentropyfit(X, y, self.weights, iterations)
+
+            wrong_list = [int(x) for x in t.predict(np.array(X)) != y]
+            err = np.sum(self.weights * wrong_list)/np.sum(self.weights)
+            gamma = np.log((1-err)/err)
+            self.gammas_list.append(gamma)
+
+            self.weights *= np.exp([gamma*x for x in wrong_list]) / np.sum(np.exp([gamma*x for x in wrong_list]))
+            self.weights = normalize(self.weights)
+
+            self.trees_list.append(t)
+
 
 
     def predict(self, X):
@@ -1252,6 +1270,7 @@ class BaggedConvDT():
     def predict(self, X):
         tree_predictions = np.mean(np.array([tree.predict(X) for tree in self.trees_list]), axis=0)
         return threshold(tree_predictions)
+
 
 
 
